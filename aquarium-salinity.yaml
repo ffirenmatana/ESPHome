@@ -411,13 +411,31 @@ button:
     icon: "mdi:restart"
 
 # Text sensor to show calibration status
+
+# Text sensor to show calibration status
 text_sensor:
   - platform: template
     name: "Calibration Status"
     id: cal_status
+    update_interval: 1h  # Update every hour to stay in sync with days_since_calibration
     lambda: |-
-      if (id(calibration_mode)) {
-        return {"Calibration Mode Active"};
+      // Check if days_since_calibration sensor has a valid state
+      if (!id(days_since_calibration).has_state()) {
+        return {"Unknown"};  // Return if sensor not ready yet
+      }
+      
+      float days = id(days_since_calibration).state;
+      
+      // Handle the "never calibrated" case (999.9 days)
+      if (days >= 999.0) {
+        return {"Never Calibrated"};
+      }
+      
+      // Determine status based on days since calibration
+      if (days < 30.0) {
+        return {"Recent Calibration"};
+      } else if (days >= 30.0 && days < 60.0) {
+        return {"Calibration Recommended"};
       } else {
-        return {"Normal Operation"};
+        return {"Calibration Required"};
       }
