@@ -73,7 +73,7 @@ globals:
     initial_value: '0.0'
   - id: last_calibration_time      
     type: uint32_t                 
-    initial_value: '0'             
+    initial_value: '0'            
 
 # Persistent storage for calibration parameters - MUST be defined before sensors
 number:
@@ -83,7 +83,7 @@ number:
     entity_category: config
     min_value: 0.1
     max_value: 100.0
-    initial_value: 15.68
+    initial_value: 12.421
     step: 0.001
     optimistic: true
     restore_value: true
@@ -105,7 +105,7 @@ number:
     entity_category: config
     min_value: -10.0
     max_value: 10.0
-    initial_value: -1.97  # Based on your measurement
+    initial_value: -0.37 # Based on your measurement
     step: 0.01
     optimistic: true
     restore_value: true
@@ -117,7 +117,7 @@ number:
     entity_category: config
     min_value: 0
     max_value: 2147483647  # Max uint32_t value
-    initial_value: 0
+    initial_value: 1
     step: 1
     optimistic: true
     restore_value: true  # This is the key - persists across reboots
@@ -133,10 +133,15 @@ sensor:
     id: temp_voltage
     update_interval: 5s
     accuracy_decimals: 4
-    internal: false  # Hide raw voltage reading
+    internal: true  # Hide raw voltage reading
     unit_of_measurement: "mV"
     filters:
       - multiply: 1000  # Convert to mV for consistency
+      - median:
+          window_size: 3  # Remove spikes first
+      - exponential_moving_average:
+          alpha: 0.15     # Then smooth the data
+          send_every: 1
 
   - platform: template
     name: "Water Temperature"
@@ -192,9 +197,11 @@ sensor:
     accuracy_decimals: 4
     filters:
       - multiply: 1000  # Convert to mV
+      - median:
+          window_size: 3  # Remove spikes first
       - exponential_moving_average:
-          alpha: 0.0033
-          send_every: 10 
+          alpha: 0.15     # Then smooth the data
+          send_every: 1
     internal: false  # Hide from HA if you only want the final EC value
     
   # EC Value calculated sensor
@@ -206,10 +213,6 @@ sensor:
     state_class: "measurement"
     accuracy_decimals: 2
     update_interval: 5s
-    filters:
-      - exponential_moving_average:
-          alpha: 0.0033
-          send_every: 10 
     lambda: |-
       float voltage = id(ec_voltage).state;
       float temperature = id(water_temp).state;
@@ -411,8 +414,6 @@ button:
     icon: "mdi:restart"
 
 # Text sensor to show calibration status
-
-# Text sensor to show calibration status
 text_sensor:
   - platform: template
     name: "Calibration Status"
@@ -439,3 +440,5 @@ text_sensor:
       } else {
         return {"Calibration Required"};
       }
+
+ 
