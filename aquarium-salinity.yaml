@@ -13,16 +13,16 @@ logger:
 # Enable Home Assistant API
 api:
   encryption:
-    key: !secret esphome_api
+    key: 
 
 ota:
   - platform: esphome
-    password: !secret esphome_ota
+    password: 
 
 wifi:
   ssid: !secret wifi_ssid_fish
   password: !secret wifi_password_fish
-  domain: !secret domain
+  domain: 
   fast_connect: true
   manual_ip:
     static_ip: 10.10.10.41
@@ -32,8 +32,7 @@ wifi:
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
     ssid: "Aquarium-Salinity"
-    password: !secret fallback_ap_pw
-
+    password: 
 captive_portal:
 
 web_server:
@@ -50,30 +49,35 @@ time:
 
 # I2C configuration for ADS1115
 i2c:
-  sda: GPIO8   
+  sda: GPIO8   #
   scl: GPIO9   
   scan: true
   frequency: 400kHz
 
 # ADS1115 configuration
 ads1115:
-  - address: 0x48  # Default I2C address
+  - address: 0x48  
     id: ads1115_hub
 
-# Global variables for calibration
 globals:
-  - id: calibration_mode
-    type: bool
-    initial_value: 'false'
-  - id: cal_voltage_low
+  - id: res2
     type: float
-    initial_value: '0.0'
-  - id: cal_voltage_high
+    initial_value: '820.0'
+  - id: ecref
     type: float
-    initial_value: '0.0'
-  - id: last_calibration_time      
-    type: uint32_t                 
-    initial_value: '0' 
+    initial_value: '200.0'
+  - id: gdiff
+    type: float
+    initial_value: '16.67'  
+  - id: vr0
+    type: float
+    initial_value: '0.223'
+  - id: g0
+    type: float
+    initial_value: '2.0'
+  - id: current_i
+    type: float
+    initial_value: '0.000124'      
 
 # Persistent storage for calibration parameters - MUST be defined before sensors
 number:
@@ -94,7 +98,7 @@ number:
     entity_category: config
     min_value: -1000.0
     max_value: 1000.0
-    initial_value: 0
+    initial_value: 0.0
     step: 0.1
     optimistic: true
     restore_value: true
@@ -103,9 +107,31 @@ number:
     name: "Temperature Calibration Offset"
     id: temp_cal_offset
     entity_category: config
-    min_value: -10.0
-    max_value: 10.0
+    min_value: -20.0
+    max_value: 20.0
     initial_value: 0 
+    step: 0.01
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    name: "Temperature Calibration Slope"
+    id: temp_cal_slope
+    entity_category: config 
+    min_value: 0.5
+    max_value: 1.5
+    initial_value: 0.9823
+    step: 0.0001
+    optimistic: true
+    restore_value: true
+  
+  - platform: template
+    name: "Reference Temperature"
+    id: temp_reference
+    entity_category: config 
+    min_value: 20
+    max_value: 30
+    initial_value: 23.8
     step: 0.01
     optimistic: true
     restore_value: true
@@ -122,28 +148,6 @@ number:
     restore_value: true  
     internal: true  
 
-  - platform: template
-    name: "Temperature Calibration Slope"
-    id: temp_cal_slope
-    entity_category: config 
-    min_value: 0.80
-    max_value: 1.20
-    initial_value: 0.9823
-    step: 0.0001
-    optimistic: true
-    restore_value: true
-  
-  - platform: template
-    name: "Reference Temperature"
-    id: temp_reference
-    entity_category: config 
-    min_value: 20
-    max_value: 30
-    initial_value: 24.5
-    step: 0.01
-    optimistic: true
-    restore_value: true
-   
 sensor:
   # EC probe's integrated PT1000 temperature sensor via ADS1115
   - platform: ads1115
@@ -151,259 +155,87 @@ sensor:
     multiplexer: 'A1_GND'  # PT1000 temperature sensor on A1
     gain: 4.096  # ±4.096V range (good for PT1000 circuit)
     name: "Temperature Voltage"
-    entity_category: diagnostic
-    id: temp_voltage
+    id: pt1000_voltage
     update_interval: 5s
-    accuracy_decimals: 4
+    accuracy_decimals: 8
     internal: false  # Hide raw voltage reading
-    unit_of_measurement: "mV"
     filters:
-      - multiply: 1000  # Convert to mV for consistency
       - median:
-          window_size: 3  # Remove spikes first
-
-  # Raw temperature voltage for calibration purposes (no smoothing)
-  - platform: ads1115
-    ads1115_id: ads1115_hub
-    multiplexer: 'A1_GND'  # Same as above but no smoothing
-    gain: 4.096
-    name: "Temperature Voltage (Raw)"
-    id: temp_voltage_raw
-    entity_category: diagnostic
-    accuracy_decimals: 4
-    update_interval: 5s
-    internal: false  # Make visible for calibration reference
-    unit_of_measurement: "mV"
-    filters:
-      - multiply: 1000  # Convert to mV
-      - median:
-          window_size: 3  # Keep median filter to remove electrical spikes only
-
+          window_size: 3
+    
+  # Convert PT1000 voltage to temperature using DFRobot's conversion formula
   - platform: template
+    id: pt1000_temperature
     name: "Water Temperature"
-    id: water_temp
     unit_of_measurement: "°C"
-    device_class: "temperature"
-    state_class: "measurement"
-    update_interval: 5s
     accuracy_decimals: 2
-    lambda: |-
-      float voltage_mV = id(temp_voltage).state;
-      
-      // Convert mV to V for calculation (DFRobot formula expects volts)
-      float voltage = voltage_mV / 1000.0;
-      
-      // DFRobot PT1000 conversion constants from source code
-      const float GDIFF = 30.0/1.8;  // ~16.67
-      const float VR0 = 0.223;
-      const float G0 = 2.0;
-      const float I = 1.24 / 10000.0;  // 0.000124
-      
-      // Calculate PT1000 resistance using DFRobot formula
-      float Rpt1000 = (voltage/GDIFF + VR0) / I / G0;
-      
-      // Convert resistance to temperature
-      float temperature_raw = (Rpt1000 - 1000.0) / 3.85;
-      
-      // Apply slope and offset calibration (like your EC sensor)
-      float temperature = (temperature_raw * id(temp_cal_slope).state) + id(temp_cal_offset).state;
-      
-      // Bounds checking and logging
-      if (temperature < 15.0 || temperature > 35.0) {
-        ESP_LOGW("temp_sensor", "Temperature out of expected range: %.2f°C (raw: %.2f°C, slope: %.3f, offset: %.2f)", 
-                 temperature, temperature_raw, id(temp_cal_slope).state, id(temp_cal_offset).state);
-      } else {
-        ESP_LOGD("temp_sensor", "Temperature: %.2f°C (raw: %.2f°C, %.2f mV, %.2f Ω)", 
-                 temperature, temperature_raw, voltage_mV, Rpt1000);
-      }
-      
-      return temperature;
-  
-  - platform: template
-    name: "Water Temperature (Raw)"
-    id: water_temp_raw
-    unit_of_measurement: "°C"
-    device_class: "temperature"
-    state_class: "measurement"
-    entity_category: diagnostic
-    accuracy_decimals: 3
     update_interval: 5s
-    internal: false  # Make visible for calibration
+    filters:
+      - median:
+          window_size: 3
     lambda: |-
-      float voltage_mV = id(temp_voltage_raw).state;
-      
-      // Convert mV to V for calculation (DFRobot formula expects volts)
-      float voltage = voltage_mV / 1000.0;
-      
-      // DFRobot PT1000 conversion constants from source code
-      const float GDIFF = 30.0/1.8;  // ~16.67
-      const float VR0 = 0.223;
-      const float G0 = 2.0;
-      const float I = 1.24 / 10000.0;  // 0.000124
-      
-      // Calculate PT1000 resistance using DFRobot formula
-      float Rpt1000 = (voltage/GDIFF + VR0) / I / G0;
-      
-      // Convert resistance to temperature (RAW - no calibration applied)
-      float temperature_raw = (Rpt1000 - 1000.0) / 3.85;
-      
-      ESP_LOGD("temp_sensor_raw", "Raw Temperature: %.3f°C (%.2f mV, %.2f Ω)", 
-               temperature_raw, voltage_mV, Rpt1000);
-      
-      return temperature_raw;
+      float voltage = id(pt1000_voltage).state;
+      if (isnan(voltage)) return {};
 
-  # Voltage reading from EC sensor via ADS1115 (smoothed for stable readings)
+      // PT1000 temperature calculation based on DFRobot code
+      float rpt1000 = (voltage / id(gdiff) + id(vr0)) / id(current_i) / id(g0);
+      float temp_raw = (rpt1000 - 1000.0) / 3.85;
+      float temp = (temp_raw * id(temp_cal_slope).state) + id(temp_cal_offset).state;
+      return temp;
+
+  # Voltage reading from EC sensor via ADS1115
   - platform: ads1115
     ads1115_id: ads1115_hub
     multiplexer: 'A0_GND'  # Single-ended input on A0
     gain: 6.144  # ±6.144V range (adjust based on your sensor's output range)
     name: "EC Voltage"
-    unit_of_measurement: "mV"
     id: ec_voltage
     update_interval: 5s
     accuracy_decimals: 4
-    filters:
-      - multiply: 1000  # Convert to mV
-      - median:
-          window_size: 3  # Remove spikes first
-      - exponential_moving_average:
-          alpha: 0.15     # Then smooth the data
-          send_every: 1
     internal: false  # Hide from HA if you only want the final EC value
-
-  # Raw EC voltage for calibration purposes (minimal filtering)
-  - platform: ads1115
-    ads1115_id: ads1115_hub
-    multiplexer: 'A0_GND'  # Same as above but minimal smoothing
-    gain: 6.144
-    name: "EC Voltage (Raw)"
-    unit_of_measurement: "mV"
-    entity_category: diagnostic
-    id: ec_voltage_raw
-    update_interval: 5s  # Faster updates for calibration
-    accuracy_decimals: 4
-    filters:
-      - multiply: 1000  # Convert to mV
-      - median:
-          window_size: 3  # Keep median filter to remove electrical spikes only
-    internal: false  # Make visible for calibration reference
     
-   # EC Value calculated sensor
+  # EC Value calculated sensor
   - platform: template
     name: "EC Value"
-    id: ec_value
+    id: ec_compensated
     unit_of_measurement: "µS/cm"
     device_class: "conductivity"
     state_class: "measurement"
-    accuracy_decimals: 2
     update_interval: 5s
+    accuracy_decimals: 0
     lambda: |-
-      float voltage = id(ec_voltage).state;
-      float temperature = id(water_temp).state;
+      float voltage = id(ec_voltage).state * 1000;
+      float temperature = id(pt1000_temperature).state;
+      float kvalue = id(cal_slope).state; 
       
-      // Default temperature if sensor not available
-      if (isnan(temperature)) {
-        temperature = 24.5;
-      }
-      
-      // EC calculation with temperature compensation using DFRobot algorithm
-      float ec_value = 0;
-      
-      if (voltage > 0) {
-        // DFRobot EC calculation - this needs calibration with known standards
-        float k_value = id(cal_slope).state;  // Calibration factor (default 1.0)
-        
-        // Basic voltage to EC conversion
-        float raw_ec = (voltage / 1000.0) * k_value * 1000.0;  // Convert mV to µS/cm
-        
-        // Temperature compensation (2% per degree C from 25C)
-        float temp_coeff = 1.0 + 0.02 * (temperature - 25.0);
-        ec_value = raw_ec / temp_coeff;
-        
-        // Apply calibrated offset if available
-        ec_value += id(cal_offset).state;
-      }
-      
-      return ec_value;
-
-  # Salinity calculation from EC value 
-  - platform: template
-    name: "Salinity (Instantaneous)"
-    id: salinity_instant
-    unit_of_measurement: "ppt"
-    state_class: "measurement"
-    entity_category: diagnostic
-    accuracy_decimals: 2
-    update_interval: 5s
-    lambda: |-
-      // Calculate EC value directly in this lambda instead of referencing ec_value sensor
-      float voltage = id(ec_voltage).state;
-      float temperature = id(water_temp).state;
-      
-      // Default temperature if sensor not available
-      if (isnan(temperature)) {
-        temperature = 25.0;
-      }
+      if (isnan(voltage) || isnan(temperature)) return {};
       
       // EC calculation with temperature compensation
-      float ec_value = 0;
+      float ec_raw = 100000.0 * voltage / id(res2) / id(ecref) * kvalue;
+      float ec_compensated = ec_raw / (1.0 + 0.02 * (temperature - 25.0));
+      ec_compensated += id(cal_offset).state;
       
-      if (voltage > 0) {
-        float k_value = id(cal_slope).state;
-        float raw_ec = (voltage / 1000.0) * k_value * 1000.0;
-        float temp_coeff = 1.0 + 0.02 * (temperature - 25.0);
-        ec_value = raw_ec / temp_coeff;
-        ec_value += id(cal_offset).state;
-      }
-      
-      if (ec_value <= 0 || isnan(ec_value)) {
-        return 0.0;
-      }
-      
-      // Convert EC (µS/cm) to Salinity (ppt)
-      // For seawater: Salinity (ppt) ≈ EC (µS/cm) / 1450-1550 depending on composition
-      // For typical marine aquarium water: ~53,000 µS/cm = ~35 ppt
-      float salinity_ppt = ec_value / 1514.3;  // Adjusted for 35ppt target
-      
-      return salinity_ppt;
+      return ec_compensated;
 
-  # Smoothed salinity reading (1-hour moving average) - FIXED: Reference salinity_instant properly
   - platform: template
-    name: "Salinity (Smoothed)"
-    id: salinity_smoothed
+    id: salinity
+    name: "Salinity"
     unit_of_measurement: "ppt"
-    state_class: "measurement"
     accuracy_decimals: 2
-    update_interval: 60s  # Update every minute to reduce processing load
+    update_interval: 5s
     lambda: |-
-      static std::vector<float> readings;
-      static const int MAX_READINGS = 60;  // 60 readings = 1 hour at 1-minute intervals
+      float voltage = id(ec_voltage).state * 1000;
+      float temperature = id(pt1000_temperature).state;
+      float kvalue = id(cal_slope).state; 
       
-      // Check if salinity_instant sensor has a valid state
-      if (!id(salinity_instant).has_state()) {
-        return {};  // Return empty optional if no state yet
-      }
+      if (isnan(voltage) || isnan(temperature)) return {};
       
-      float current_salinity = id(salinity_instant).state;
+      // EC calculation with temperature compensation
+      float ec_raw = 100000.0 * voltage / id(res2) / id(ecref) * kvalue;
+      float ec_compensated = ec_raw / (1.0 + 0.02 * (temperature - 25.0));
+      ec_compensated += id(cal_offset).state;
       
-      if (!isnan(current_salinity) && current_salinity > 0) {
-        readings.push_back(current_salinity);
-        
-        // Keep only the last MAX_READINGS
-        if (readings.size() > MAX_READINGS) {
-          readings.erase(readings.begin());
-        }
-        
-        // Calculate average
-        float sum = 0;
-        for (float reading : readings) {
-          sum += reading;
-        }
-        
-        return sum / readings.size();
-      }
-      
-      return current_salinity;  // Return current reading if no history yet
+      return ec_compensated * 0.00066;
 
   - platform: template
     name: "Days Since Last Calibration"
@@ -439,9 +271,6 @@ sensor:
       
       return days;
 
-
-
-# Add calibration to adjust cal_slope based on a reference sample
 button:
   - platform: template
     name: "Calibrate Temperature Sensor"
@@ -450,7 +279,7 @@ button:
     on_press:
       - lambda: |-
           // Get the raw temperature reading (no calibration applied)
-          float raw_temp = id(water_temp_raw).state;
+          float raw_temp = id(pt1000_temperature).state;
           
           // Get the reference temperature from the GUI input
           float reference_temp = id(temp_reference).state;
@@ -486,8 +315,10 @@ button:
     on_press:
       - lambda: |-
           // Use RAW voltage reading for calibration (not smoothed)
-          float current_voltage = id(ec_voltage_raw).state;
-          float current_temp = id(water_temp).state;
+          float current_voltage = id(ec_voltage).state;
+          float current_temp = id(pt1000_temperature).state;
+          float kvalue = id(cal_slope).state; 
+
           
           if (isnan(current_temp)) {
             current_temp = 24.5;
@@ -496,7 +327,7 @@ button:
           const float target_ec = 53000.0;
           
           if (current_voltage > 0) {
-            float current_slope = id(cal_slope).state;
+            float current_slope = kvalue;
             float current_offset = id(cal_offset).state;
             float temp_coeff = 1.0 + 0.02 * (current_temp - 25.0);
             float new_slope = ((target_ec - current_offset) * temp_coeff) / current_voltage;
@@ -532,39 +363,8 @@ button:
           } else {
             ESP_LOGE("calibration", "Invalid raw voltage reading: %.2f mV", current_voltage);
           }
-  
-            
+
   - platform: restart
     name: "Salinity Controller Restart"
     icon: "mdi:restart"
-
-# Text sensor to show calibration status
-text_sensor:
-  - platform: template
-    name: "Calibration Status"
-    id: cal_status
     entity_category: diagnostic
-    update_interval: 1h  # Update every hour to stay in sync with days_since_calibration
-    lambda: |-
-      // Check if days_since_calibration sensor has a valid state
-      if (!id(days_since_calibration).has_state()) {
-        return {"Unknown"};  // Return if sensor not ready yet
-      }
-      
-      float days = id(days_since_calibration).state;
-      
-      // Handle the "never calibrated" case (999.9 days)
-      if (days >= 999.0) {
-        return {"Never Calibrated"};
-      }
-      
-      // Determine status based on days since calibration
-      if (days < 30.0) {
-        return {"Recent Calibration"};
-      } else if (days >= 30.0 && days < 60.0) {
-        return {"Calibration Recommended"};
-      } else {
-        return {"Calibration Required"};
-      }
-
-  
