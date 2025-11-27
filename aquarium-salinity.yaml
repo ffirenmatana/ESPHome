@@ -38,6 +38,48 @@ web_server:
     username: !secret web_user
     password: !secret web_pw
 
+esphome:
+  name: salinity
+  friendly_name: "Aquarium: Salinity"
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "9Nm/RvrwxZljqYW/tQIIawYTX75BHaxjMP54pjA2z4w="
+
+ota:
+  - platform: esphome
+    password: "3f71170f6ef4c8d593133ee85a2afcd9"
+
+wifi:
+  ssid: !secret wifi_ssid_fish
+  password: !secret wifi_password_fish
+  domain: .bushe.com.au
+  fast_connect: true
+  manual_ip:
+    static_ip: 10.10.10.41
+    gateway: 10.10.10.1
+    subnet: 255.255.255.0
+  ap:
+    
+captive_portal:
+
+web_server:
+  port: 80
+  local: true
+  version: 3
+  auth:
+    username: !secret web_user
+    password: !secret web_pw
+
 time:
   - platform: homeassistant
     id: homeassistant_time
@@ -48,19 +90,21 @@ i2c:
   scan: true
   frequency: 400kHz
 
+# ADS1115 configuration
 ads1115:
   - address: 0x48 
     id: ads1115_hub
-    
-number:         
+
+# Persistent storage for calibration parameters - MUST be defined before sensors
+number: 
   - platform: template
     name: "EC Calibration Slope"
     id: ec_slope
     entity_category: config
     min_value: 0
     max_value: 30
-    initial_value: 25.52
-    step: 0.01
+    initial_value: 24.5772
+    step: 0.0001
     optimistic: true
     restore_value: true
 
@@ -72,17 +116,6 @@ number:
     max_value: 30.0
     initial_value: 0.0
     step: 0.1
-    optimistic: true
-    restore_value: true
-  
-  - platform: template
-    name: "Reference Temperature"
-    id: ref_temp
-    entity_category: config 
-    min_value: 20
-    max_value: 30
-    initial_value: 1
-    step: 0.01
     optimistic: true
     restore_value: true
 
@@ -143,7 +176,7 @@ sensor:
     update_interval: 5s
     filters:
       - sliding_window_moving_average:
-          window_size: 3 
+          window_size: 5
           send_every: 1
       - lambda: |-
           return round(x * 100.0) / 100.0;
@@ -171,23 +204,31 @@ sensor:
         send_every: 1
 
   - platform: template
-    name: "EC Internal"
-    id: ec_internal
+    name: "Electrical Conductivity"
+    id: ec
     unit_of_measurement: "µS/cm"
     device_class: "conductivity"
     state_class: "measurement"
     update_interval: 5s
     filters:
       - sliding_window_moving_average:
-          window_size: 5
+          window_size: 15
           send_every: 1
     lambda: |-
-      float measured = id(ec_voltage).state;    // raw ADS voltage in volts
-      float voltage = (measured / 0.6) * 1000.0;  // correct divider + convert to mV
+      float measured = id(ec_voltage).state;         // V_adc (after divider)
+      float voltage = (measured / 0.6) * 1000.0;     // true probe voltage in mV
       float temperature = id(pt1000_temperature).state;
       if (isnan(voltage) || isnan(temperature)) return {};
+
+      // Raw EC from probe voltage (before temperature compensation)
       float ec_raw = 100000.0 * voltage / 820.0 / 200.0 * id(ec_slope).state;
-      float ec_compensated = ec_raw / (1.0 + 0.02 * (temperature - 25.0));
+
+      // Improved temperature compensation for seawater in at my expected temp range
+      const float alpha = 0.019f;        // 1.9% per °C
+      const float tref  = 27.0f;         // more realistic reference for your tank
+      float temp_coeff  = 1.0f + alpha * (temperature - tref);
+
+      float ec_compensated = ec_raw / temp_coeff;
       ec_compensated += id(ec_offset).state;
       return ec_compensated;
 
@@ -197,8 +238,12 @@ sensor:
     unit_of_measurement: "ppt"
     accuracy_decimals: 2
     update_interval: 10s
+    filters:
+      - sliding_window_moving_average:
+          window_size: 9
+          send_every: 1
     lambda: |-
-      float ec25 = id(ec_internal).state;
+      float ec25 = id(ec).state;
       if (isnan(ec25)) return {};
       return ec25 * 0.00066;
 
@@ -214,10 +259,12 @@ sensor:
     lambda: |-
       uint32_t last_cal_timestamp = (uint32_t)id(last_calibration_timestamp).state;
       
+      // If never calibrated, return a large number to indicate this
       if (last_cal_timestamp == 0) {
         return 999.9;  // Indicates "never calibrated"
       }
       
+      // Get current time from Home Assistant
       auto time = id(homeassistant_time).now();
       if (!time.is_valid()) {
         ESP_LOGW("calibration", "Time not available from Home Assistant");
@@ -225,8 +272,13 @@ sensor:
       }
       
       uint32_t current_timestamp = time.timestamp;
+      
+      // Calculate time difference in seconds
       uint32_t time_diff = current_timestamp - last_cal_timestamp;
+      
+      // Convert to days (86400 seconds per day)
       float days = time_diff / 86400.0;
+      
       return days;
 
 button:
@@ -236,10 +288,13 @@ button:
     entity_category: diagnostic
     on_press:
       - lambda: |-
-          float measured = id(ec_voltage).state;            
-          float current_voltage = (measured / 0.6) * 1000.0;  // I'm using a voltage divider!
-          float current_temp = id(ref_temp).state;
-        
+          // Read divided ADC voltage
+          float measured = id(ec_voltage).state;             // V_adc
+          // Undo divider and convert to mV (true probe voltage)
+          float current_voltage = (measured / 0.6) * 1000.0; // V_probe in mV
+
+          float current_temp = id(pt1000_temperature).state;
+          
           if (isnan(current_temp)) {
             current_temp = 24.5;
           }
@@ -248,14 +303,16 @@ button:
           
           if (current_voltage > 0) {
             float current_offset = id(ec_offset).state;
-            float temp_coeff = 1.0 + 0.02 * (current_temp - 25.0);
+            const float alpha = 0.019f;
+            const float tref  = 27.0f;
+            float temp_coeff  = 1.0f + alpha * (current_temp - tref);
             
             // EC formula: ec = (100000 * voltage / 820 / 200 * slope / temp_coeff) + offset
             // Solving for slope: slope = (target_ec - offset) * temp_coeff / (100000 * voltage / 820 / 200)
             float voltage_factor = 100000.0 * current_voltage / 820.0 / 200.0;
             float new_slope = ((target_ec - current_offset) * temp_coeff) / voltage_factor;
             
-            if (new_slope > 0.1 && new_slope < 100.0) {
+              if (new_slope > 0.1 && new_slope < 100.0) {
               auto call = id(ec_slope).make_call();
               call.set_value(new_slope);
               call.perform();
