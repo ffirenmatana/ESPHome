@@ -8,7 +8,6 @@ i2c:
   scan: true
   frequency: 400kHz
 
-# ADS1115 configuration
 ads1115:
   - address: 0x48 
     id: ads1115_hub
@@ -19,10 +18,10 @@ number:
     name: "EC Calibration Slope"
     id: ec_slope
     entity_category: config
-    min_value: 0.1
-    max_value: 100.0
-    initial_value: 21.227
-    step: 0.001
+    min_value: 0
+    max_value: 30
+    initial_value: 25.52
+    step: 0.01
     optimistic: true
     restore_value: true
 
@@ -30,8 +29,8 @@ number:
     name: "EC Calibration Offset"
     id: ec_offset
     entity_category: config
-    min_value: -1000.0
-    max_value: 1000.0
+    min_value: -30.0
+    max_value: 30.0
     initial_value: 0.0
     step: 0.1
     optimistic: true
@@ -43,7 +42,7 @@ number:
     entity_category: config 
     min_value: 20
     max_value: 30
-    initial_value: 23.92
+    initial_value: 1
     step: 0.01
     optimistic: true
     restore_value: true
@@ -66,7 +65,7 @@ number:
     entity_category: config
     min_value: -20.0
     max_value: 20.0
-    initial_value: 0 
+    initial_value: 4.6
     step: 0.01
     optimistic: true
     restore_value: true
@@ -75,63 +74,59 @@ number:
     name: "Temperature Calibration Slope"
     id: temp_slope
     entity_category: config 
-    min_value: 0.5
-    max_value: 1.5
-    initial_value: 0.7474
+    min_value: -10
+    max_value: 10
+    initial_value: -7.65
     step: 0.0001
     optimistic: true
     restore_value: true
     
 sensor:
-    # EC probe's integrated PT1000 temperature sensor via ADS1115
   - platform: ads1115
     ads1115_id: ads1115_hub
-    multiplexer: 'A1_GND'  
+    multiplexer: 'A0_GND'  
     gain: 1.024
     name: "Temperature Voltage"
     id: pt1000_voltage
     update_interval: 2s  
-    # accuracy_decimals: 8
+    accuracy_decimals: 4
     internal: false
     filters:
       - median:
-          window_size: 5
+          window_size: 3 
           send_every: 1
 
-  # Convert PT1000 voltage to temperature using DFRobot's conversion formula
   - platform: template
     id: pt1000_temperature
     name: "Water Temperature"
     unit_of_measurement: "°C"
     accuracy_decimals: 2
-    internal: false
     update_interval: 2s
     filters:
-      - median:
-          window_size: 5
+      - sliding_window_moving_average:
+          window_size: 3 
           send_every: 1
+      - lambda: |-
+          return round(x * 100.0) / 100.0;
     lambda: |-
       float voltage = id(pt1000_voltage).state;
       if (isnan(voltage)) return {};
-
-      // PT1000 temperature calculation based on DFRobot code
-      float rpt1000 = (voltage / 16.67 + 0.223) / 0.000124 / 2.0;  
+      float rpt1000 = (voltage / 16.67 + 0.223) / 0.000124 / 2.0; 
       float temp_raw = (rpt1000 - 1000.0) / 3.85;
       float temp = (temp_raw * id(temp_slope).state) + id(temp_offset).state;
       return temp;
-
-  # Voltage reading from EC sensor via ADS1115
+    
   - platform: ads1115
     ads1115_id: ads1115_hub
-    multiplexer: 'A0_GND'  
+    multiplexer: 'A1_GND'  
     gain: 4.096
     name: "EC Voltage"
     id: ec_voltage
     update_interval: 2s
+    unit_of_measurement: V
     accuracy_decimals: 4
     internal: false
     
-  # EC Value using internal temperature
   - platform: template
     name: "EC Internal"
     id: ec_internal
@@ -139,15 +134,18 @@ sensor:
     device_class: "conductivity"
     state_class: "measurement"
     update_interval: 2s
+    filters:
+      - median:
+          window_size: 3
+          send_every: 1
     lambda: |-
-      float voltage = id(ec_voltage).state * 1000; 
+      float measured = id(ec_voltage).state;    // raw ADS voltage in volts
+      float voltage = (measured / 0.6) * 1000.0;  // correct divider + convert to mV
       float temperature = id(pt1000_temperature).state;
       if (isnan(voltage) || isnan(temperature)) return {};
-      
-      float ec_raw = 100000.0 * voltage / 820.0 / 200.0 * id(ec_slope).state; 
+      float ec_raw = 100000.0 * voltage / 820.0 / 200.0 * id(ec_slope).state;
       float ec_compensated = ec_raw / (1.0 + 0.02 * (temperature - 25.0));
       ec_compensated += id(ec_offset).state;
-      
       return ec_compensated;
 
   - platform: template
@@ -157,19 +155,9 @@ sensor:
     accuracy_decimals: 2
     update_interval: 2s
     lambda: |-
-      float voltage = id(ec_voltage).state * 1000;
-      float temperature = id(pt1000_temperature).state;
-      float kvalue = id(ec_slope).state; 
-      
-      if (isnan(voltage) || isnan(temperature)) return {};
-      
-      // EC calculation with temperature compensation
-      float ec_raw = 100000.0 * voltage / 820.0 / 200.0 * id(ec_slope).state;
-      float ec_compensated = ec_raw / (1.0 + 0.02 * (temperature - 25.0));
-      ec_compensated += id(ec_offset).state;
-      
-      return ec_compensated * 0.00066;
-
+      float ec25 = id(ec_internal).state;
+      if (isnan(ec25)) return {};
+      return ec25 * 0.00066;
 
   - platform: template
     name: "Days Since Last Calibration"
